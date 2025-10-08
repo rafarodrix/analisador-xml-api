@@ -1,7 +1,7 @@
-2025-10-08 19:02:00,545 - INFO - Iniciando processo de análise de documentos fiscais.
-2025-10-08 19:02:00,601 - INFO - Encontrados 6606 arquivos .xml. Processando...
-2025-10-08 19:02:03,836 - INFO - Análise concluída. 6606 arquivos processados.
-2025-10-08 19:02:03,837 - INFO - Gerando relatórios...
-2025-10-08 19:02:03,844 - INFO - Relatório de sumário gerado em: C:\Users\rafael\OneDrive\Área de Trabalho\analise\analisados\relatorio_sumario.txt
-2025-10-08 19:02:03,904 - INFO - Relatório detalhado CSV gerado em: C:\Users\rafael\OneDrive\Área de Trabalho\analise\analisados\relatorio_detalhado.csv
-2025-10-08 19:02:03,904 - INFO - Processo finalizado com sucesso.
+2025-10-08 20:09:53,723 - INFO - Iniciando processo de análise de documentos fiscais.
+2025-10-08 20:09:53,777 - INFO - Encontrados 6606 arquivos .xml. Processando...
+2025-10-08 20:09:56,776 - INFO - Análise concluída. 6606 arquivos processados.
+2025-10-08 20:09:56,776 - INFO - Gerando relatórios...
+2025-10-08 20:09:56,780 - INFO - Relatório de sumário gerado em: C:\Users\rafael\OneDrive\Área de Trabalho\analise\analisados\relatorio_sumario.txt
+2025-10-08 20:09:56,829 - INFO - Relatório detalhado CSV gerado em: C:\Users\rafael\OneDrive\Área de Trabalho\analise\analisados\relatorio_detalhado.csv
+2025-10-08 20:09:56,830 - INFO - Processo finalizado com sucesso.
