@@ -26,10 +26,25 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_files():
+    # ??? NOVOS LOGS PARA DEPURAÇÃO ???
+    logging.info("="*50)
+    logging.info("Nova requisição recebida em /api/analyze")
+    logging.info(f"Cabeçalhos da Requisição: {request.headers}")
+    logging.info(f"Dados do Formulário (request.form): {request.form}")
+    logging.info(f"Chaves dos Arquivos (request.files.keys()): {list(request.files.keys())}")
+    # ??? FIM DOS NOVOS LOGS ???
+
     if 'files' not in request.files:
-        return jsonify({"error": "Nenhum arquivo enviado"}), 400
+        logging.error("Chave 'files' não encontrada na requisição.")
+        return jsonify({"error": "Estrutura da requisição inválida: chave 'files' ausente."}), 400
 
     files = request.files.getlist('files')
+    # NOVO LOG para verificar se a lista de arquivos está vazia
+    logging.info(f"Número de arquivos recebidos na lista 'files': {len(files)}")
+    if not files or files[0].filename == '':
+        logging.error("A lista de arquivos recebida está vazia.")
+        return jsonify({"error": "Nenhum arquivo selecionado foi recebido pelo servidor."}), 400
+        
     numeros_raw = request.form.get('numerosParaCopiar', '')
     
     job_id = str(uuid.uuid4())
@@ -38,8 +53,11 @@ def analyze_files():
     os.makedirs(source_path, exist_ok=True)
 
     try:
+        logging.info(f"Salvando {len(files)} arquivos na pasta {source_path}...")
         for file in files:
-            file.save(source_path / secure_filename(file.filename))
+            filename = secure_filename(file.filename)
+            file.save(source_path / filename)
+        logging.info("Arquivos salvos com sucesso.")
             
         numeros_para_copiar = analysis_engine.parse_numeros(numeros_raw)
         result_paths = analysis_engine.run_analysis(source_path, dest_path, numeros_para_copiar)
@@ -54,14 +72,11 @@ def analyze_files():
             "downloadUrl": f"/api/download/{job_id}/{zip_path.name}",
         })
     except Exception as e:
-        # Adiciona logging para vermos o erro exato no log do Render
         logging.error(f"Erro no job {job_id}: {e}", exc_info=True)
         return jsonify({"error": f"Ocorreu um erro interno durante a análise."}), 500
     finally:
-        # Limpa as pastas temporárias
         if source_path.exists():
             shutil.rmtree(source_path)
-        # A pasta de resultados é mantida até o download ser solicitado
 
 @app.route('/api/download/<job_id>/<filename>', methods=['GET'])
 def download_file(job_id, filename):
