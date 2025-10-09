@@ -104,185 +104,136 @@ def agrupar_lacunas(numeros: list[int]) -> str:
     resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
     return ", ".join(resultado)
 
-    """Gera relatórios para a seção 'ANÁLISE DE SEQUÊNCIA NUMÉRICA POR SÉRIE'."""
-def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
-    logging.info("Iniciando geração de relatórios")
+ef gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
+    """Gera relatórios de resumo (.txt) e detalhado (.csv) com análise de sequência."""
+    logging.info("Iniciando geração de relatórios aprimorados...")
 
     resumo_path = pasta_destino / "resumo_analise.txt"
     csv_path = pasta_destino / "relatorio_detalhado.csv"
-    detalhes_dir = pasta_destino / "detalhes_series"
-    detalhes_dir.mkdir(exist_ok=True)
-
+    
     total_xmls = len(lista_dados_notas)
+    if total_xmls == 0:
+        logging.warning("Nenhuma nota para processar nos relatórios.")
+        # Cria relatórios vazios para evitar erros
+        resumo_path.touch()
+        csv_path.touch()
+        return resumo_path, csv_path
+
     com_erro = sum(1 for n in lista_dados_notas if n.erros)
     contagem_status = Counter(n.tipo_documento for n in lista_dados_notas)
 
-    # Agrupa números por (modelo, serie)
+    # Agrupa notas AUTORIZADAS por (modelo, serie) para análise de sequência
     dados_por_serie = defaultdict(list)
+    outras_notas = []
     for nota in lista_dados_notas:
         if nota.tipo_documento == "NFe Autorizada" and nota.modelo and nota.serie and nota.numero_inicial and nota.numero_inicial.isdigit():
             chave = (nota.modelo, nota.serie)
-            dados_por_serie[chave].append(int(nota.numero_inicial))
+            dados_por_serie[chave].append(nota)
+        else:
+            outras_notas.append(nota)
 
-    # Cabeçalho do resumo legível
+    # --- 1. GERAÇÃO DO RESUMO EM TEXTO (.txt) ---
     with resumo_path.open('w', encoding='utf-8') as f:
         f.write("=" * 100 + "\n")
-        f.write(f"{'RELATÓRIO DE ANÁLISE DE NF-e':^100}\n")
+        f.write(f"{'RELATÓRIO DE ANÁLISE DE DOCUMENTOS FISCAIS':^100}\n")
         f.write("=" * 100 + "\n")
         f.write(f"Data da Análise: {datetime.now():%d/%m/%Y %H:%M:%S}\n")
         if tempo_execucao is not None:
             f.write(f"Tempo total de execução: {tempo_execucao:.2f} segundos\n")
-        f.write(f"Arquivos Processados: {total_xmls}\n")
+        f.write(f"Total de Arquivos Processados: {total_xmls}\n")
         f.write(f"XMLs com Erro de Leitura: {com_erro}\n\n")
 
         f.write("-" * 100 + "\n")
         f.write(f"{'SUMÁRIO DE STATUS DOS DOCUMENTOS':^100}\n")
         f.write("-" * 100 + "\n")
         for status, qtd in sorted(contagem_status.items()):
-            percentual = (qtd / total_xmls * 100) if total_xmls else 0
+            percentual = (qtd / total_xmls * 100)
             f.write(f"- {status:<35}: {qtd:<6} ({percentual:.2f}%)\n")
         f.write("\n")
 
-        # Tabela resumida por série (compacta)
         f.write("=" * 100 + "\n")
-        f.write(f"{'ANÁLISE DE SEQUÊNCIA NUMÉRICA POR SÉRIE':^100}\n")
+        f.write(f"{'ANÁLISE DE SEQUÊNCIA NUMÉRICA (NF-e AUTORIZADAS)':^100}\n")
         f.write("=" * 100 + "\n\n")
 
         if not dados_por_serie:
-            f.write("Nenhuma NF-e autorizada encontrada para realizar a análise de sequência.\n\n")
+            f.write("Nenhuma NF-e autorizada encontrada para análise de sequência.\n")
         else:
-            # Cabeçalho da tabela
-            hdr = f"{'Modelo':<7} {'Série':<6} {'Intervalo':<22} {'QtdeDocs':>8} {'Pulos':>6} {'%Pulos':>8} {'Situação':<26}"
+            hdr = f"{'Modelo':<7} {'Série':<6} {'Intervalo':<22} {'Qtde Encontrada':>16} {'Pulos':>7} {'% Pulos':>9}  {'Situação'}"
             f.write(hdr + "\n")
             f.write("-" * 100 + "\n")
 
-            # Para cada série, escrevemos uma linha resumida; faltantes abaixo, wrapped
-            for (modelo, serie), numeros in sorted(dados_por_serie.items()):
-                if not numeros:
-                    continue
-                numeros.sort()
+            for (modelo, serie), notas in sorted(dados_por_serie.items()):
+                numeros = sorted([int(n.numero_inicial) for n in notas])
                 min_n, max_n = numeros[0], numeros[-1]
-                esperado = set(range(min_n, max_n + 1))
-                faltantes = sorted(list(esperado - set(numeros)))
+                
+                intervalo_total = set(range(min_n, max_n + 1))
+                numeros_encontrados_set = set(numeros)
+                
+                faltantes = sorted(list(intervalo_total - numeros_encontrados_set))
                 qtd_faltantes = len(faltantes)
-                total_intervalo = len(esperado) if esperado else 0
-                percentual_pulos = (qtd_faltantes / total_intervalo * 100) if total_intervalo else 0.0
+                
+                total_no_intervalo = len(intervalo_total)
+                percentual_pulos = (qtd_faltantes / total_no_intervalo * 100) if total_no_intervalo > 0 else 0.0
 
-                situacao = "SEQUÊNCIA COMPLETA" if qtd_faltantes == 0 else "INCOMPLETA"
-                situacao_extra = f" ({percentual_pulos:.2f}% faltantes)" if qtd_faltantes else ""
+                situacao = "COMPLETA" if qtd_faltantes == 0 else "INCOMPLETA"
 
-                row = f"{str(modelo):<7} {str(serie):<6} {f'{min_n}–{max_n}':<22} {len(numeros):>8} {qtd_faltantes:>6} {percentual_pulos:>7.2f}% {situacao + situacao_extra:<26}"
+                row = (f"{str(modelo):<7} {str(serie):<6} {f'{min_n} a {max_n}':<22} "
+                       f"{len(numeros):>16} {qtd_faltantes:>7} {f'{percentual_pulos:.2f}%':>8}  {situacao}")
                 f.write(row + "\n")
-
-                # Se houver faltantes, formatar a lista de forma legível (wrap)
-                if qtd_faltantes:
-                    # Agrupa em ranges compactos: "1050, 2301-2304, 5001"
+                
+                if qtd_faltantes > 0:
                     lacunas_formatadas = agrupar_lacunas(faltantes)
-                    
-                    # Quebra o texto em múltiplas linhas para não ficar longo demais
-                    wrapped = textwrap.wrap(lacunas_formatadas, width=96)
-                    
-                    f.write(f"    Faltantes ({qtd_faltantes}):\n")
-                    for line in wrapped:
-                        f.write("      " + line + "\n")
-                    f.write("\n")
-                else:
-                    f.write("    Sequência Completa!\n\n")
+                    linhas_quebradas = textwrap.wrap(f"   +- Números Faltantes: {lacunas_formatadas}", width=98, subsequent_indent='      ')
+                    for linha in linhas_quebradas:
+                        f.write(linha + "\n")
+                f.write("\n")
 
-                f.write("-" * 100 + "\n")
-
-
-        # conclusão geral
-        f.write("\n")
-        f.write("=" * 100 + "\n")
-        f.write(f"{'CONCLUSÃO GERAL':^100}\n")
-        f.write("=" * 100 + "\n")
-        f.write(f"- Total de XMLs analisados: {total_xmls}\n")
-        f.write(f"- Total de NF-es Autorizadas: {contagem_status.get('NFe Autorizada', 0)}\n")
-        f.write(f"- Total de Arquivos com Erros: {com_erro}\n")
-        f.write(f"- Relatórios gerados: {resumo_path.name}, {csv_path.name}\n")
-        f.write(f"- Detalhes por série (quando aplicável) em: {detalhes_dir.name}/\n")
-        f.write("=" * 100 + "\n")
-
-    # --------------------------- GERAR CSV DETALHADO ---------------------------
+    # --- 2. GERAÇÃO DO CSV DETALHADO ---
     headers = [
         "modelo", "serie", "numero_nota", "data_emissao", "tipo_documento",
         "status_sefaz_cod", "status_sefaz_motivo", "chave_acesso",
         "arquivo_origem", "foi_copiado", "situacao_numeracao", "erros"
     ]
-
-    # Agrupar notas por modelo/série
-    notas_por_serie = defaultdict(dict)
-    for nota in lista_dados_notas:
-        try:
-            num = int(nota.numero_inicial) if nota.numero_inicial.isdigit() else None
-            if num is not None:
-                notas_por_serie[(nota.modelo, nota.serie)][num] = nota
-        except:
-            continue
-
+    
     with csv_path.open('w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow(headers)
 
-        for (modelo, serie), notas_dict in sorted(notas_por_serie.items()):
-            if not notas_dict:
-                continue
-            
+        # Processa e analisa a sequência de notas autorizadas
+        for (modelo, serie), notas in sorted(dados_por_serie.items()):
+            notas_dict = {int(n.numero_inicial): n for n in notas}
             numeros = sorted(notas_dict.keys())
-            min_n, max_n = min(numeros), max(numeros)
-            intervalo_completo = set(range(min_n, max_n + 1))
-            
-            for numero in sorted(intervalo_completo):
-                nota = notas_dict.get(numero)
-                
-                if nota:  # XML existente
-                    try:
-                        data_fmt = ""
-                        if nota.data_emissao:
-                            # formata se vier em ISO 8601
-                            data_fmt = nota.data_emissao
-                            if "T" in data_fmt:
-                                try:
-                                    dt = datetime.datetime.fromisoformat(data_fmt.replace("Z", ""))
-                                    data_fmt = dt.strftime("%d/%m/%Y %H:%M")
-                                except:
-                                    pass
-                        writer.writerow([
-                            nota.modelo,
-                            nota.serie,
-                            nota.numero_inicial,
-                            data_fmt,
-                            nota.tipo_documento,
-                            nota.status_code,
-                            nota.status_text,
-                            nota.chave_acesso,
-                            nota.arquivo_path.name,
-                            "Sim" if nota.foi_copiado else "Não",
-                            "Presente",
-                            "; ".join(nota.erros),
-                        ])
-                    except Exception as e:
-                        logging.warning(f"Erro ao escrever nota {numero}: {e}")
-                
-                else:  # número faltante
-                    writer.writerow([
-                        modelo,
-                        serie,
-                        numero,
-                        "",
-                        "NFe Ausente",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "Não",
-                        "Faltante",
-                        "",
-                    ])
+            min_n, max_n = numeros[0], numeros[-1]
 
-    logging.info("Relatórios gerados com sucesso (texto + CSV detalhado e ordenado).")
+            for numero_atual in range(min_n, max_n + 1):
+                nota = notas_dict.get(numero_atual)
+                if nota: # A nota para este número existe
+                    writer.writerow([
+                        nota.modelo, nota.serie, nota.numero_inicial,
+                        _formatar_data(nota.data_emissao), nota.tipo_documento,
+                        nota.status_code, nota.status_text, nota.chave_acesso,
+                        nota.arquivo_path.name, "Sim" if nota.foi_copiado else "Não",
+                        "Presente", "; ".join(nota.erros)
+                    ])
+                else: # A nota para este número está faltando
+                    writer.writerow([
+                        modelo, serie, numero_atual, "", "Ausente",
+                        "", "", "", "", "Não", "Faltante", ""
+                    ])
+        
+        # Adiciona as outras notas (Canceladas, Inutilizadas, etc.) no final
+        for nota in sorted(outras_notas, key=lambda n: (n.modelo, n.serie, n.numero_inicial)):
+             writer.writerow([
+                nota.modelo, nota.serie, nota.numero_inicial,
+                _formatar_data(nota.data_emissao), nota.tipo_documento,
+                nota.status_code, nota.status_text, nota.chave_acesso,
+                nota.arquivo_path.name, "Sim" if nota.foi_copiado else "Não",
+                "N/A", "; ".join(nota.erros)
+            ])
+
+    logging.info("Relatórios gerados com sucesso.")
     return resumo_path, csv_path
+
 
 
 # --- FUNÇÃO PRINCIPAL ---
