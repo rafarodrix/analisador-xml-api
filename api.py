@@ -16,60 +16,53 @@ UPLOAD_FOLDER = Path('/tmp/uploads')
 RESULTS_FOLDER = Path('/tmp/results')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_files():
-    logging.info("="*50)
-    logging.info("Nova requisição recebida em /api/analyze")
-    
-    numeros_raw = request.form.get('numerosParaCopiar', '')
     job_id = str(uuid.uuid4())
     source_path = UPLOAD_FOLDER / job_id
     dest_path = RESULTS_FOLDER / job_id
     os.makedirs(source_path, exist_ok=True)
-
+    
     try:
-        # ??? LÓGICA DINÂMICA PARA LIDAR COM ZIP OU PASTA ???
+        numeros_raw = request.form.get('numerosParaCopiar', '')
 
-        # CASO 1: Um único arquivo 'file' foi enviado (é um ZIP)
         if 'file' in request.files:
             zip_file = request.files['file']
             if zip_file.filename == '' or not zip_file.filename.endswith('.zip'):
                 return jsonify({"error": "Por favor, envie um arquivo .zip válido."}), 400
             
-            zip_filename = secure_filename(zip_file.filename)
-            zip_filepath = source_path / zip_filename
+            zip_filepath = source_path / secure_filename(zip_file.filename)
             zip_file.save(zip_filepath)
-            logging.info(f"Arquivo {zip_filename} salvo, iniciando extração...")
-
+            
             with zipfile.ZipFile(zip_filepath, 'r') as zf:
                 zf.extractall(source_path)
             os.remove(zip_filepath)
-            logging.info("Arquivos extraídos com sucesso.")
 
-        # CASO 2: Múltiplos arquivos 'files' foram enviados (é uma pasta)
         elif 'files' in request.files:
             files = request.files.getlist('files')
             if not files or (len(files) == 1 and files[0].filename == ''):
                  return jsonify({"error": "Nenhum arquivo da pasta foi recebido."}), 400
-            
-            logging.info(f"Recebidos {len(files)} arquivos de uma pasta. Salvando...")
             for file in files:
                 if file and file.filename:
-                    filename = secure_filename(file.filename)
-                    file.save(source_path / filename)
-            logging.info("Arquivos da pasta salvos com sucesso.")
-        
-        # CASO 3: Nenhum dos formatos esperados foi enviado
+                    file.save(source_path / secure_filename(file.filename))
         else:
             return jsonify({"error": "Nenhum arquivo ou pasta foi enviado."}), 400
 
-        # ??? FIM DA LÓGICA DINÂMICA ???
+        # Lógica para encontrar a pasta raiz correta
+        analysis_root = source_path
+        items_in_source = list(source_path.iterdir())
+        
+        # Desconsidera arquivos ocultos do macOS se existirem
+        items_in_source = [item for item in items_in_source if item.name != '__MACOSX']
+
+        if len(items_in_source) == 1 and items_in_source[0].is_dir():
+            analysis_root = items_in_source[0]
+            logging.info(f"Pasta raiz detectada dentro do zip. Nova raiz da análise: {analysis_root}")
             
-        # A partir daqui, o resto do código funciona igual, pois a source_path já contém os XMLs
         numeros_para_copiar = analysis_engine.parse_numeros(numeros_raw)
-        result_paths = analysis_engine.run_analysis(source_path, dest_path, numeros_para_copiar)
+        result_paths = analysis_engine.run_analysis(analysis_root, dest_path, numeros_para_copiar)
 
         with open(result_paths["summary_path"], 'r', encoding='utf-8') as f:
             summary_content = f.read()
@@ -77,6 +70,7 @@ def analyze_files():
         zip_path_resultado = result_paths['zip_path']
         
         return jsonify({
+            "jobId": job_id, # Retorna o Job ID no sucesso
             "summary": summary_content,
             "downloadUrl": f"/api/download/{job_id}/{zip_path_resultado.name}",
         })
@@ -86,7 +80,6 @@ def analyze_files():
     finally:
         if source_path.exists():
             shutil.rmtree(source_path)
-
 
 @app.route('/api/download/<job_id>/<filename>', methods=['GET'])
 def download_file(job_id, filename):
