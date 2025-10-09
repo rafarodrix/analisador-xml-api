@@ -3,15 +3,14 @@ import uuid
 import shutil
 import logging
 import zipfile
-import io # Necessário para a limpeza segura
+import io 
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS # Essencial para o frontend
+from flask_cors import CORS 
 from werkzeug.utils import secure_filename
 import analysis_engine
 
 app = Flask(__name__)
-# MELHORIA: CORS é fundamental para a comunicação entre frontend e backend
 CORS(app) 
 
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +33,6 @@ def analyze_files():
         logging.info(f"Iniciando job {job_id}")
         xml_files_in_memory = {}
 
-        # --- MELHORIA: LÓGICA DE UPLOAD DINÂMICO (ZIP OU PASTA) ---
         # Caso 1: Upload de um arquivo ZIP
         if 'file' in request.files:
             zip_file = request.files['file']
@@ -72,7 +70,6 @@ def analyze_files():
         if not zip_path.exists():
             raise IOError("Arquivo ZIP final não foi gerado.")
 
-        # --- MELHORIA: LIMPEZA SEGURA DE ARQUIVOS ---
         # 1. Lê todo o arquivo ZIP para a memória
         zip_in_memory = io.BytesIO()
         with open(zip_path, 'rb') as f:

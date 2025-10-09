@@ -3,11 +3,11 @@ import shutil
 import logging
 import csv
 import time
-import zipfile # Importa a biblioteca zipfile
+import zipfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
-from collections import Counter
+from collections import defaultdict, Counter
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -61,9 +61,7 @@ def obter_dados_xml_de_conteudo(filename: str, file_content: bytes) -> DadosNota
     """Extrai dados essenciais de um XML (NFe, evento ou inutilização) a partir do seu conteúdo em bytes."""
     nota = DadosNota(arquivo_path=Path(filename))
     try:
-        # Tentativa de decodificação segura
         content_str = file_content.decode('utf-8', errors='replace')
-
         root = ET.fromstring(content_str)
         ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
 
@@ -86,22 +84,40 @@ def obter_dados_xml_de_conteudo(filename: str, file_content: bytes) -> DadosNota
             if infInut_node is not None:
                 nota.numero_inicial = infInut_node.findtext('nfe:nNFIni', nota.numero_inicial, ns)
                 nota.numero_final = infInut_node.findtext('nfe:nNFFin', nota.numero_final, ns)
-
     except ET.ParseError as e:
         nota.erros.append(f"XML inválido: {e}")
     except Exception as e:
         nota.erros.append(f"Erro inesperado: {e}")
-
     return nota
 
+def agrupar_lacunas(numeros: list[int]) -> str:
+    """Agrupa uma lista de números em intervalos para melhor legibilidade."""
+    if not numeros: return ""
+    numeros = sorted(numeros)
+    resultado, inicio_intervalo = [], numeros[0]
+    for i in range(1, len(numeros)):
+        if numeros[i] != numeros[i-1] + 1:
+            fim_intervalo = numeros[i-1]
+            resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
+            inicio_intervalo = numeros[i]
+    fim_intervalo = numeros[-1]
+    resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
+    return ", ".join(resultado)
+
 def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) -> tuple[Path, Path]:
-    """Gera arquivos de relatório (resumo.txt) e CSV detalhado."""
+    """Gera arquivos de relatório, incluindo a análise detalhada de sequência numérica."""
     logging.info("Iniciando geração de relatórios...")
     resumo_path = pasta_destino / "resumo_analise.txt"
     csv_path = pasta_destino / "relatorio_detalhado.csv"
 
     contagem_status = Counter(d.tipo_documento for d in lista_dados_notas)
     com_erro = sum(1 for n in lista_dados_notas if n.erros)
+    
+    dados_por_serie = defaultdict(list)
+    for nota in lista_dados_notas:
+        if nota.tipo_documento == "NFe Autorizada" and nota.modelo and nota.serie and nota.numero_inicial.isdigit():
+            chave = (nota.modelo, nota.serie)
+            dados_por_serie[chave].append(int(nota.numero_inicial))
 
     with resumo_path.open('w', encoding='utf-8') as f:
         f.write(f"Resumo da Análise - {datetime.now():%d/%m/%Y %H:%M:%S}\n")
@@ -110,12 +126,34 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) ->
         f.write("--- Sumário de Status dos Documentos ---\n")
         for status, contagem in sorted(contagem_status.items()):
             f.write(f"- {status:<30}: {contagem}\n")
+        
+        f.write("\n\n" + "="*80 + "\n")
+        f.write(f"{'Análise de Sequência Numérica (Pulos de Numeração)':^80}\n")
+        f.write("="*80 + "\n\n")
 
-    headers = [
-        "arquivo_origem", "tipo_documento", "status_sefaz_cod", "status_sefaz_motivo",
-        "numero_inicial", "numero_final", "serie", "modelo", "data_emissao",
-        "chave_acesso", "foi_copiado", "erros"
-    ]
+        if not dados_por_serie:
+            f.write("Nenhuma NF-e autorizada encontrada para realizar a análise de sequência.\n")
+        else:
+            for (modelo, serie), numeros in sorted(dados_por_serie.items()):
+                if not numeros: continue
+                
+                numeros.sort()
+                min_n, max_n = numeros[0], numeros[-1]
+                f.write(f"Modelo: {modelo} | Série: {serie} | Documentos: {len(numeros)} | Intervalo: {min_n} a {max_n}\n")
+                
+                esperado = set(range(min_n, max_n + 1))
+                faltantes = sorted(list(esperado - set(numeros)))
+                
+                if faltantes:
+                    lacunas_formatadas = agrupar_lacunas(faltantes)
+                    f.write(f"  └─ Status: INCOMPLETA. {len(faltantes)} pulos encontrados.\n")
+                    f.write(f"     Números Faltantes: {lacunas_formatadas}\n\n")
+                else:
+                    f.write(f"  └─ Status: Sequência Completa!\n\n")
+
+    headers = ["arquivo_origem", "tipo_documento", "status_sefaz_cod", "status_sefaz_motivo",
+               "numero_inicial", "numero_final", "serie", "modelo", "data_emissao",
+               "chave_acesso", "foi_copiado", "erros"]
     with csv_path.open('w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow(headers)
@@ -126,7 +164,7 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) ->
                 nota.serie, nota.modelo, nota.data_emissao, nota.chave_acesso,
                 "Sim" if nota.foi_copiado else "Não", "; ".join(nota.erros),
             ])
-    logging.info(f"Relatórios gerados em: {resumo_path} e {csv_path}")
+    logging.info(f"Relatórios gerados com sucesso.")
     return resumo_path, csv_path
 
 # --- FUNÇÃO PRINCIPAL ---
@@ -150,7 +188,6 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
     with ThreadPoolExecutor() as executor:
         futures = {executor.submit(obter_dados_xml_de_conteudo, filename, content): (filename, content)
                    for filename, content in xml_files_in_memory.items()}
-        
         for future in as_completed(futures):
             nota = future.result()
             lista_dados_notas.append(nota)
@@ -178,24 +215,19 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
     zip_filename = f"resultados_{datetime.now():%Y%m%d_%H%M%S}.zip"
     zip_filepath = pasta_destino / zip_filename
     
-    # ▼▼▼ LÓGICA DE COMPACTAÇÃO SUBSTITUÍDA ▼▼▼
     with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Adiciona os relatórios sempre
         zf.write(resumo_path, arcname=resumo_path.name)
         zf.write(csv_path, arcname=csv_path.name)
 
-        # Adiciona os arquivos copiados, se houver algum
         arquivos_a_copiar = list(pasta_copiados.glob('*'))
         if arquivos_a_copiar:
             for file_path in arquivos_a_copiar:
-                # Adiciona o arquivo dentro de uma pasta 'xmls_copiados' no zip
                 zf.write(file_path, arcname=f"xmls_copiados/{file_path.name}")
-    # ▲▲▲ FIM DA SUBSTITUIÇÃO ▲▲▲
 
     elapsed = round(time.time() - start_time, 2)
     logging.info(f"Análise finalizada: {len(lista_dados_notas)} XMLs processados, {copiados} copiados ({elapsed}s).")
 
     return {
-        "zip_path": zip_filepath, # Agora o caminho já inclui a extensão .zip
+        "zip_path": zip_filepath,
         "summary_path": resumo_path,
     }
