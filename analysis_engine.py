@@ -175,28 +175,21 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
 
                 # Se houver faltantes, formatar a lista de forma legível (wrap)
                 if qtd_faltantes:
-                    # primeiro agrupa em ranges compactos: "1050, 2301-2304, 5001"
+                    # Agrupa em ranges compactos: "1050, 2301-2304, 5001"
                     lacunas_formatadas = agrupar_lacunas(faltantes)
-                    # Se for muito longa, salvamos o detalhe em arquivo e mostramos apenas as primeiras N chars
-                    max_display_chars = 240  # quantos chars mostrar no relatório antes de truncar
-                    if len(lacunas_formatadas) > max_display_chars:
-                        # criar arquivo detalhe
-                        detalhe_file = detalhes_dir / f"faltantes_modelo_{modelo}_serie_{serie}.txt"
-                        detalhe_file.write_text(lacunas_formatadas, encoding='utf-8')
-                        # mostrar as primeiras partes com wrap
-                        snippet = lacunas_formatadas[:max_display_chars]
-                        wrapped = textwrap.wrap(snippet, width=96)
-                        f.write("    Faltantes (truncado):\n")
-                        for line in wrapped:
-                            f.write("      " + line + "\n")
-                        f.write(f"      ... e mais {len(lacunas_formatadas) - max_display_chars} caracteres. Ver: {detalhe_file.name}\n\n")
-                    else:
-                        wrapped = textwrap.wrap(lacunas_formatadas, width=96)
-                        f.write("    Faltantes:\n")
-                        for line in wrapped:
-                            f.write("      " + line + "\n")
-                        f.write("\n")
-            f.write("-" * 100 + "\n")
+                    
+                    # Quebra o texto em múltiplas linhas para não ficar longo demais
+                    wrapped = textwrap.wrap(lacunas_formatadas, width=96)
+                    
+                    f.write(f"    Faltantes ({qtd_faltantes}):\n")
+                    for line in wrapped:
+                        f.write("      " + line + "\n")
+                    f.write("\n")
+                else:
+                    f.write("    Sequência Completa!\n\n")
+
+                f.write("-" * 100 + "\n")
+
 
         # conclusão geral
         f.write("\n")
