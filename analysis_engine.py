@@ -104,56 +104,100 @@ def agrupar_lacunas(numeros: list[int]) -> str:
     resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
     return ", ".join(resultado)
 
-def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) -> tuple[Path, Path]:
-    """Gera arquivos de relatório, incluindo a análise detalhada de sequência numérica."""
-    logging.info("Iniciando geração de relatórios...")
+def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float = 0.0) -> tuple[Path, Path]:
+    """Gera relatórios detalhados e um resumo visual aprimorado da análise de NF-e."""
+    logging.info("Iniciando geração de relatórios (versão aprimorada)...")
+
     resumo_path = pasta_destino / "resumo_analise.txt"
     csv_path = pasta_destino / "relatorio_detalhado.csv"
 
-    contagem_status = Counter(d.tipo_documento for d in lista_dados_notas)
+    total_xmls = len(lista_dados_notas)
     com_erro = sum(1 for n in lista_dados_notas if n.erros)
-    
+    contagem_status = Counter(n.tipo_documento for n in lista_dados_notas)
+
     dados_por_serie = defaultdict(list)
     for nota in lista_dados_notas:
         if nota.tipo_documento == "NFe Autorizada" and nota.modelo and nota.serie and nota.numero_inicial.isdigit():
             chave = (nota.modelo, nota.serie)
             dados_por_serie[chave].append(int(nota.numero_inicial))
 
+    # --------------------------- GERAR RESUMO ---------------------------
     with resumo_path.open('w', encoding='utf-8') as f:
-        f.write(f"Resumo da Análise - {datetime.now():%d/%m/%Y %H:%M:%S}\n")
-        f.write(f"Total de XMLs processados: {len(lista_dados_notas)}\n")
-        f.write(f"XMLs com erro de leitura: {com_erro}\n\n")
-        f.write("--- Sumário de Status dos Documentos ---\n")
-        for status, contagem in sorted(contagem_status.items()):
-            f.write(f"- {status:<30}: {contagem}\n")
-        
-        f.write("\n\n" + "="*80 + "\n")
-        f.write(f"{'Análise de Sequência Numérica (Pulos de Numeração)':^80}\n")
-        f.write("="*80 + "\n\n")
+        f.write("═" * 80 + "\n")
+        f.write(f"{'RELATÓRIO DE ANÁLISE DE NF-e':^80}\n")
+        f.write("═" * 80 + "\n")
+        f.write(f"Data da Análise: {datetime.now():%d/%m/%Y %H:%M:%S}\n")
+        f.write(f"Tempo de Execução: {tempo_execucao:.2f} segundos\n")
+        f.write(f"Arquivos Processados: {total_xmls}\n")
+        f.write(f"XMLs com Erro de Leitura: {com_erro}\n\n")
+
+        f.write("─" * 80 + "\n")
+        f.write(f"{'SUMÁRIO DE STATUS DOS DOCUMENTOS':^80}\n")
+        f.write("─" * 80 + "\n")
+        for status, qtd in sorted(contagem_status.items()):
+            percentual = (qtd / total_xmls * 100) if total_xmls else 0
+            f.write(f"- {status:<30}: {qtd:<6} ({percentual:.2f}%)\n")
+
+        f.write("\n" + "═" * 80 + "\n")
+        f.write(f"{'ANÁLISE DE SEQUÊNCIA NUMÉRICA POR SÉRIE':^80}\n")
+        f.write("═" * 80 + "\n\n")
 
         if not dados_por_serie:
             f.write("Nenhuma NF-e autorizada encontrada para realizar a análise de sequência.\n")
         else:
+            header = (
+                "┌────────┬───────┬───────────────┬───────────────┬────────────┬────────────────────────────┐\n"
+                "│ Modelo │ Série │ Intervalo     │ Qtde Docs      │ Pulos      │ Situação                   │\n"
+                "├────────┼───────┼───────────────┼───────────────┼────────────┼────────────────────────────┤\n"
+            )
+            f.write(header)
+
             for (modelo, serie), numeros in sorted(dados_por_serie.items()):
-                if not numeros: continue
-                
+                if not numeros:
+                    continue
+
                 numeros.sort()
                 min_n, max_n = numeros[0], numeros[-1]
-                f.write(f"Modelo: {modelo} | Série: {serie} | Documentos: {len(numeros)} | Intervalo: {min_n} a {max_n}\n")
-                
                 esperado = set(range(min_n, max_n + 1))
                 faltantes = sorted(list(esperado - set(numeros)))
-                
+                qtd_faltantes = len(faltantes)
+                percentual_pulos = (qtd_faltantes / len(esperado) * 100) if esperado else 0
+
+                if faltantes:
+                    status = f"INCOMPLETA ({percentual_pulos:.2f}% faltantes)"
+                else:
+                    status = "SEQUÊNCIA COMPLETA ✅"
+
+                f.write(
+                    f"│ {modelo:^6} │ {serie:^5} │ {min_n:>6}-{max_n:<6} │ "
+                    f"{len(numeros):>7}         │ {qtd_faltantes:<4} ({percentual_pulos:.2f}%) │ {status:<26} │\n"
+                )
+
                 if faltantes:
                     lacunas_formatadas = agrupar_lacunas(faltantes)
-                    f.write(f"  └─ Status: INCOMPLETA. {len(faltantes)} pulos encontrados.\n")
-                    f.write(f"     Números Faltantes: {lacunas_formatadas}\n\n")
-                else:
-                    f.write(f"  └─ Status: Sequência Completa!\n\n")
+                    f.write(f"│        │       │               │                │          │ Faltantes: {lacunas_formatadas:<42} │\n")
 
-    headers = ["arquivo_origem", "tipo_documento", "status_sefaz_cod", "status_sefaz_motivo",
-               "numero_inicial", "numero_final", "serie", "modelo", "data_emissao",
-               "chave_acesso", "foi_copiado", "erros"]
+            f.write("└────────┴───────┴───────────────┴───────────────┴────────────┴────────────────────────────┘\n\n")
+
+        f.write("═" * 80 + "\n")
+        f.write(f"{'CONCLUSÃO GERAL':^80}\n")
+        f.write("═" * 80 + "\n")
+        f.write(f"- Total de XMLs analisados: {total_xmls}\n")
+        f.write(f"- Total de NF-es Autorizadas: {contagem_status.get('NFe Autorizada', 0)}\n")
+        f.write(f"- Total de Arquivos com Erros: {com_erro}\n")
+        f.write(f"- Arquivos de Relatório:\n")
+        f.write(f"    • {resumo_path.name}\n")
+        f.write(f"    • {csv_path.name}\n")
+        f.write(f"    • xmls_copiados/ (se aplicável)\n")
+        f.write(f"- Resultado final compactado será gerado no mesmo diretório.\n")
+        f.write("═" * 80 + "\n")
+
+    # --------------------------- GERAR CSV DETALHADO ---------------------------
+    headers = [
+        "arquivo_origem", "tipo_documento", "status_sefaz_cod", "status_sefaz_motivo",
+        "numero_inicial", "numero_final", "serie", "modelo", "data_emissao",
+        "chave_acesso", "foi_copiado", "erros"
+    ]
     with csv_path.open('w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow(headers)
@@ -164,10 +208,12 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) ->
                 nota.serie, nota.modelo, nota.data_emissao, nota.chave_acesso,
                 "Sim" if nota.foi_copiado else "Não", "; ".join(nota.erros),
             ])
-    logging.info(f"Relatórios gerados com sucesso.")
+
+    logging.info("Relatórios gerados com sucesso (versão aprimorada).")
     return resumo_path, csv_path
 
 # --- FUNÇÃO PRINCIPAL ---
+
 
 def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, numeros_para_copiar: set[int]) -> dict:
     """Executa análise de XMLs (em memória), gera relatórios e compacta o resultado."""
@@ -209,7 +255,7 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
         except Exception as e:
             nota.erros.append(f"Falha ao copiar XML: {e}")
 
-    resumo_path, csv_path = gerar_relatorios(lista_dados_notas, pasta_destino)
+    resumo_path, csv_path = gerar_relatorios(lista_dados_notas, pasta_destino, tempo_execucao=round(time.time() - start_time, 2))
 
     logging.info("Compactando resultados manualmente para maior robustez...")
     zip_filename = f"resultados_{datetime.now():%Y%m%d_%H%M%S}.zip"
