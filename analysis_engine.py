@@ -3,6 +3,7 @@ import csv
 import time
 import zipfile
 import textwrap
+import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -205,23 +206,84 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
 
     # --------------------------- GERAR CSV DETALHADO ---------------------------
     headers = [
-        "arquivo_origem", "tipo_documento", "status_sefaz_cod", "status_sefaz_motivo",
-        "numero_inicial", "numero_final", "serie", "modelo", "data_emissao",
-        "chave_acesso", "foi_copiado", "erros"
+        "modelo", "serie", "numero_nota", "data_emissao", "tipo_documento",
+        "status_sefaz_cod", "status_sefaz_motivo", "chave_acesso",
+        "arquivo_origem", "foi_copiado", "situacao_numeracao", "erros"
     ]
+
+    # Agrupar notas por modelo/série
+    notas_por_serie = defaultdict(dict)
+    for nota in lista_dados_notas:
+        try:
+            num = int(nota.numero_inicial) if nota.numero_inicial.isdigit() else None
+            if num is not None:
+                notas_por_serie[(nota.modelo, nota.serie)][num] = nota
+        except:
+            continue
+
     with csv_path.open('w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow(headers)
-        for nota in sorted(lista_dados_notas, key=lambda n: n.arquivo_path.name):
-            writer.writerow([
-                nota.arquivo_path.name, nota.tipo_documento, nota.status_code,
-                nota.status_text, nota.numero_inicial, nota.numero_final,
-                nota.serie, nota.modelo, nota.data_emissao, nota.chave_acesso,
-                "Sim" if nota.foi_copiado else "Não", "; ".join(nota.erros),
-            ])
 
-    logging.info("Relatórios gerados com sucesso em texto e CSV.")
+        for (modelo, serie), notas_dict in sorted(notas_por_serie.items()):
+            if not notas_dict:
+                continue
+            
+            numeros = sorted(notas_dict.keys())
+            min_n, max_n = min(numeros), max(numeros)
+            intervalo_completo = set(range(min_n, max_n + 1))
+            
+            for numero in sorted(intervalo_completo):
+                nota = notas_dict.get(numero)
+                
+                if nota:  # XML existente
+                    try:
+                        data_fmt = ""
+                        if nota.data_emissao:
+                            # formata se vier em ISO 8601
+                            data_fmt = nota.data_emissao
+                            if "T" in data_fmt:
+                                try:
+                                    dt = datetime.datetime.fromisoformat(data_fmt.replace("Z", ""))
+                                    data_fmt = dt.strftime("%d/%m/%Y %H:%M")
+                                except:
+                                    pass
+                        writer.writerow([
+                            nota.modelo,
+                            nota.serie,
+                            nota.numero_inicial,
+                            data_fmt,
+                            nota.tipo_documento,
+                            nota.status_code,
+                            nota.status_text,
+                            nota.chave_acesso,
+                            nota.arquivo_path.name,
+                            "Sim" if nota.foi_copiado else "Não",
+                            "Presente",
+                            "; ".join(nota.erros),
+                        ])
+                    except Exception as e:
+                        logging.warning(f"Erro ao escrever nota {numero}: {e}")
+                
+                else:  # número faltante
+                    writer.writerow([
+                        modelo,
+                        serie,
+                        numero,
+                        "",
+                        "NFe Ausente",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "Não",
+                        "Faltante",
+                        "",
+                    ])
+
+    logging.info("Relatórios gerados com sucesso (texto + CSV detalhado e ordenado).")
     return resumo_path, csv_path
+
 
 # --- FUNÇÃO PRINCIPAL ---
 
