@@ -4,10 +4,13 @@ import shutil
 import logging
 import zipfile
 from pathlib import Path
-from flask import Flask, request, jsonify, send_from_directory, after_this_request
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import analysis_engine
+
+# Nota: O import 'after_this_request' não é mais necessário
+# from flask import after_this_request 
 
 app = Flask(__name__)
 CORS(app)
@@ -21,35 +24,27 @@ os.makedirs(RESULTS_FOLDER, exist_ok=True)
 @app.route('/api/analyze', methods=['POST'])
 def analyze_files():
     job_id = str(uuid.uuid4())
-    # A única pasta que usamos no disco é para os resultados FINAIS
     result_dir = RESULTS_FOLDER / job_id
     result_dir.mkdir(parents=True, exist_ok=True)
     
-    # Dicionário para guardar os arquivos em memória: {nome_do_arquivo: conteudo_em_bytes}
     xml_files_in_memory = {}
 
     try:
-        # --- LÓGICA ATUALIZADA PARA TRABALHAR EM MEMÓRIA ---
-        
-        # Caso 1: Upload de um arquivo ZIP
-        if 'file' in request.files:
+        # Lógica para popular o dicionário em memória
+        if 'file' in request.files: # Upload de ZIP
             zip_file = request.files['file']
             if not zip_file or not zip_file.filename.lower().endswith('.zip'):
                 return jsonify({"error": "Envie um arquivo .zip válido."}), 400
             
-            # Lê o zip em memória e extrai o conteúdo dos XMLs para o dicionário
             with zipfile.ZipFile(zip_file, 'r') as zf:
                 for filename in zf.namelist():
-                    # Ignora pastas e arquivos de metadados (ex: do macOS)
                     if not filename.endswith('/') and '__MACOSX' not in filename and filename.lower().endswith('.xml'):
                         xml_files_in_memory[os.path.basename(filename)] = zf.read(filename)
 
-        # Caso 2: Upload de uma pasta (múltiplos arquivos)
-        elif 'files' in request.files:
+        elif 'files' in request.files: # Upload de pasta
             files = request.files.getlist('files')
             for file in files:
                 if file and file.filename and file.filename.lower().endswith('.xml'):
-                    # Lê o conteúdo de cada arquivo para o dicionário
                     xml_files_in_memory[secure_filename(file.filename)] = file.read()
         else:
             return jsonify({"error": "Nenhum arquivo enviado."}), 400
@@ -57,12 +52,8 @@ def analyze_files():
         numeros_raw = request.form.get('numerosParaCopiar', '')
         numeros_para_copiar = analysis_engine.parse_numeros(numeros_raw)
         
-        # --- CHAMADA CORRETA ---
-        # Agora passamos o dicionário em memória, como o analysis_engine.py espera
         result_paths = analysis_engine.run_analysis(xml_files_in_memory, result_dir, numeros_para_copiar)
 
-        # A partir daqui, a lógica para retornar o resultado é diferente.
-        # O frontend espera um JSON, não um download direto.
         with open(result_paths["summary_path"], 'r', encoding='utf-8') as f:
             summary_content = f.read()
 
@@ -86,16 +77,10 @@ def analyze_files():
 def download_file(job_id, filename):
     directory = RESULTS_FOLDER / secure_filename(job_id)
     try:
-        @after_this_request
-        def cleanup(response):
-            # Limpa a pasta de resultados após a requisição de download ser concluída
-            try:
-                if directory.exists():
-                    shutil.rmtree(directory)
-            except Exception as e:
-                logging.error(f"Erro ao limpar a pasta temporária {directory}: {e}")
-            return response
-
+        # ??? CORREÇÃO APLICADA AQUI ???
+        # O bloco @after_this_request foi removido para evitar que o arquivo
+        # seja deletado antes do download terminar.
+        # ??? FIM DA CORREÇÃO ???
         return send_from_directory(directory, filename, as_attachment=True)
     except FileNotFoundError:
         return jsonify({"error": "Arquivo não encontrado ou expirado."}), 404
