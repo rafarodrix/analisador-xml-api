@@ -66,7 +66,6 @@ def obter_dados_xml_de_conteudo(filename: str, file_content: bytes) -> DadosNota
         root = ET.fromstring(content_str)
         ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
 
-        # Busca genérica — cobre diferentes tipos de XMLs da SEFAZ
         nota.status_code = (root.findtext('.//nfe:cStat', '', ns) or '').strip()
         nota.status_text = (root.findtext('.//nfe:xMotivo', '', ns) or '').strip()
         nota.tipo_documento = _mapear_cstat_para_tipo(nota.status_code)
@@ -81,7 +80,6 @@ def obter_dados_xml_de_conteudo(filename: str, file_content: bytes) -> DadosNota
 
         nota.chave_acesso = (root.findtext('.//nfe:chNFe', '', ns) or '').strip()
 
-        # Inutilização de faixa de numeração
         if nota.tipo_documento == "NFe Inutilizada":
             infInut_node = root.find('.//nfe:infInut', ns)
             if infInut_node is not None:
@@ -147,32 +145,31 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
 
     lista_dados_notas = []
     
-    # --- MELHORIA: PROCESSAMENTO PARALELO ---
     logging.info("Processando XMLs em paralelo...")
-    # Usa ThreadPoolExecutor para analisar múltiplos arquivos ao mesmo tempo
     with ThreadPoolExecutor() as executor:
-        # Submete cada arquivo para análise em uma thread separada
         futures = {executor.submit(obter_dados_xml_de_conteudo, filename, content): (filename, content)
                    for filename, content in xml_files_in_memory.items()}
         
-        # Coleta os resultados conforme eles ficam prontos
         for future in as_completed(futures):
             nota = future.result()
             lista_dados_notas.append(nota)
     logging.info("Análise de todos os XMLs concluída.")
 
-    # --- Cópia dos arquivos (sequencial, pois envolve escrita em disco) ---
     logging.info("Verificando arquivos para cópia...")
     copiados = 0
     for nota in lista_dados_notas:
         try:
             numero = int(nota.numero_inicial) if nota.numero_inicial and nota.numero_inicial.isdigit() else None
             if numero and numero in numeros_para_copiar:
-                filename, file_content = next((name, content) for name, content in xml_files_in_memory.items() if name == nota.arquivo_path.name)
-                destino = pasta_copiados / filename
-                destino.write_bytes(file_content)
-                nota.foi_copiado = True
-                copiados += 1
+                # Encontra o conteúdo do arquivo original em memória para poder salvá-lo
+                # Isso evita ter que ler o arquivo do disco novamente
+                filename_original = nota.arquivo_path.name
+                if filename_original in xml_files_in_memory:
+                    file_content = xml_files_in_memory[filename_original]
+                    destino = pasta_copiados / filename_original
+                    destino.write_bytes(file_content)
+                    nota.foi_copiado = True
+                    copiados += 1
         except Exception as e:
             nota.erros.append(f"Falha ao copiar XML: {e}")
 
@@ -180,10 +177,16 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
 
     logging.info("Compactando resultados...")
     zip_filename = f"resultados_{datetime.now():%Y%m%d_%H%M%S}"
+    
+    # FORMA CORRIGIDA E ROBUSTA DE CHAMAR A COMPACTAÇÃO
+    diretorio_pai = pasta_destino.parent 
+    nome_da_pasta_a_compactar = pasta_destino.name 
+    
     zip_filepath = shutil.make_archive(
         base_name=str(pasta_destino / zip_filename),
         format="zip",
-        root_dir=pasta_destino
+        root_dir=diretorio_pai,
+        base_dir=nome_da_pasta_a_compactar
     )
 
     elapsed = round(time.time() - start_time, 2)
