@@ -30,6 +30,18 @@ class DadosNota:
 
 # --- FUNÇÕES AUXILIARES ---
 
+def _formatar_data(iso_str: str) -> str:
+    """Converte uma string de data ISO 8601 para DD/MM/AAAA HH:MM de forma robusta."""
+    if not iso_str or "T" not in iso_str:
+        return iso_str
+    try:
+        # Lida com fusos horários como -03:00, -04:00, e Z (UTC)
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except (ValueError, TypeError):
+        logging.warning(f"Não foi possível formatar a data: {iso_str}")
+        return iso_str  # Retorna o original em caso de falha
+
 def parse_numeros(raw_str: str) -> set[int]:
     """Converte string de números separados por vírgula em conjunto de inteiros válidos."""
     if not raw_str:
@@ -106,7 +118,7 @@ def agrupar_lacunas(numeros: list[int]) -> str:
 
 def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
     """Gera relatórios de resumo (.txt) e detalhado (.csv) com análise de sequência."""
-    logging.info("Iniciando geração de relatórios aprimorados...")
+    logging.info("Iniciando geração de relatórios")
 
     resumo_path = pasta_destino / "resumo_analise.txt"
     csv_path = pasta_destino / "relatorio_detalhado.csv"
