@@ -103,9 +103,9 @@ def agrupar_lacunas(numeros: list[int]) -> str:
     resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
     return ", ".join(resultado)
 
-def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) -> tuple[Path, Path]:
-    """Gera relatórios com layout melhorado para a seção 'ANÁLISE DE SEQUÊNCIA NUMÉRICA POR SÉRIE'."""
-    logging.info("Iniciando geração de relatórios (layout melhorado)...")
+    """Gera relatórios para a seção 'ANÁLISE DE SEQUÊNCIA NUMÉRICA POR SÉRIE'."""
+def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
+    logging.info("Iniciando geração de relatórios")
 
     resumo_path = pasta_destino / "resumo_analise.txt"
     csv_path = pasta_destino / "relatorio_detalhado.csv"
@@ -129,6 +129,8 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) ->
         f.write(f"{'RELATÓRIO DE ANÁLISE DE NF-e':^100}\n")
         f.write("=" * 100 + "\n")
         f.write(f"Data da Análise: {datetime.now():%d/%m/%Y %H:%M:%S}\n")
+        if tempo_execucao is not None:
+            f.write(f"Tempo total de execução: {tempo_execucao:.2f} segundos\n")
         f.write(f"Arquivos Processados: {total_xmls}\n")
         f.write(f"XMLs com Erro de Leitura: {com_erro}\n\n")
 
@@ -225,7 +227,7 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path) ->
                 "Sim" if nota.foi_copiado else "Não", "; ".join(nota.erros),
             ])
 
-    logging.info("Relatórios gerados com sucesso (layout melhorado).")
+    logging.info("Relatórios gerados com sucesso em texto e CSV.")
     return resumo_path, csv_path
 
 # --- FUNÇÃO PRINCIPAL ---
