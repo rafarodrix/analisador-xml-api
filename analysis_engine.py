@@ -3,6 +3,7 @@ import shutil
 import logging
 import csv
 import time
+import zipfile # Importa a biblioteca zipfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -161,8 +162,6 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
         try:
             numero = int(nota.numero_inicial) if nota.numero_inicial and nota.numero_inicial.isdigit() else None
             if numero and numero in numeros_para_copiar:
-                # Encontra o conteúdo do arquivo original em memória para poder salvá-lo
-                # Isso evita ter que ler o arquivo do disco novamente
                 filename_original = nota.arquivo_path.name
                 if filename_original in xml_files_in_memory:
                     file_content = xml_files_in_memory[filename_original]
@@ -173,26 +172,30 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
         except Exception as e:
             nota.erros.append(f"Falha ao copiar XML: {e}")
 
-    resumo_path, _ = gerar_relatorios(lista_dados_notas, pasta_destino)
+    resumo_path, csv_path = gerar_relatorios(lista_dados_notas, pasta_destino)
 
-    logging.info("Compactando resultados...")
-    zip_filename = f"resultados_{datetime.now():%Y%m%d_%H%M%S}"
+    logging.info("Compactando resultados manualmente para maior robustez...")
+    zip_filename = f"resultados_{datetime.now():%Y%m%d_%H%M%S}.zip"
+    zip_filepath = pasta_destino / zip_filename
     
-    # FORMA CORRIGIDA E ROBUSTA DE CHAMAR A COMPACTAÇÃO
-    diretorio_pai = pasta_destino.parent 
-    nome_da_pasta_a_compactar = pasta_destino.name 
-    
-    zip_filepath = shutil.make_archive(
-        base_name=str(pasta_destino / zip_filename),
-        format="zip",
-        root_dir=diretorio_pai,
-        base_dir=nome_da_pasta_a_compactar
-    )
+    # ▼▼▼ LÓGICA DE COMPACTAÇÃO SUBSTITUÍDA ▼▼▼
+    with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Adiciona os relatórios sempre
+        zf.write(resumo_path, arcname=resumo_path.name)
+        zf.write(csv_path, arcname=csv_path.name)
+
+        # Adiciona os arquivos copiados, se houver algum
+        arquivos_a_copiar = list(pasta_copiados.glob('*'))
+        if arquivos_a_copiar:
+            for file_path in arquivos_a_copiar:
+                # Adiciona o arquivo dentro de uma pasta 'xmls_copiados' no zip
+                zf.write(file_path, arcname=f"xmls_copiados/{file_path.name}")
+    # ▲▲▲ FIM DA SUBSTITUIÇÃO ▲▲▲
 
     elapsed = round(time.time() - start_time, 2)
     logging.info(f"Análise finalizada: {len(lista_dados_notas)} XMLs processados, {copiados} copiados ({elapsed}s).")
 
     return {
-        "zip_path": Path(zip_filepath),
+        "zip_path": zip_filepath, # Agora o caminho já inclui a extensão .zip
         "summary_path": resumo_path,
     }
