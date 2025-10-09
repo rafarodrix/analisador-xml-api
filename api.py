@@ -1,76 +1,103 @@
 import os
+import uuid
+import shutil
 import logging
-from flask import Flask, request, jsonify, send_file
+import zipfile
+import io # Necessário para a limpeza segura
 from pathlib import Path
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS # Essencial para o frontend
 from werkzeug.utils import secure_filename
-
-from analysis_engine import run_analysis, parse_numeros
+import analysis_engine
 
 app = Flask(__name__)
+# MELHORIA: CORS é fundamental para a comunicação entre frontend e backend
+CORS(app) 
+
 logging.basicConfig(level=logging.INFO)
 
-# Diretório temporário para salvar os uploads e resultados
-BASE_DIR = Path("/tmp/analyze_files")
+# Define o diretório base para todos os jobs
+BASE_DIR = Path("/tmp/xml_analysis_jobs")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze_files():
     """
-    Endpoint principal para análise de XMLs enviados via upload.
-    Retorna o arquivo ZIP final para download.
+    Endpoint principal para análise de XMLs, agora com upload dinâmico e limpeza segura.
     """
+    job_id = os.urandom(8).hex()
+    job_dir = BASE_DIR / f"job_{job_id}"
+    job_dir.mkdir()
+
     try:
-        logging.info("Recebendo requisição de análise...")
-
-        # --- 1. Lê os arquivos enviados ---
-        if 'files' not in request.files:
-            return jsonify({"error": "Nenhum arquivo foi enviado."}), 400
-
-        uploaded_files = request.files.getlist("files")
-        if not uploaded_files:
-            return jsonify({"error": "Lista de arquivos vazia."}), 400
-
+        logging.info(f"Iniciando job {job_id}")
         xml_files_in_memory = {}
-        for file in uploaded_files:
-            filename = secure_filename(file.filename)
-            if not filename.lower().endswith(".xml"):
-                logging.warning(f"Ignorado arquivo não-XML: {filename}")
-                continue
-            xml_files_in_memory[filename] = file.read()
+
+        # --- MELHORIA: LÓGICA DE UPLOAD DINÂMICO (ZIP OU PASTA) ---
+        # Caso 1: Upload de um arquivo ZIP
+        if 'file' in request.files:
+            zip_file = request.files['file']
+            if zip_file and zip_file.filename.lower().endswith('.zip'):
+                logging.info(f"Job {job_id}: Recebido arquivo ZIP: {zip_file.filename}")
+                with zipfile.ZipFile(zip_file, 'r') as zf:
+                    for filename in zf.namelist():
+                        if not filename.endswith('/') and '__MACOSX' not in filename and filename.lower().endswith('.xml'):
+                            xml_files_in_memory[os.path.basename(filename)] = zf.read(filename)
+            else:
+                return jsonify({"error": "Envie um arquivo .zip válido."}), 400
+
+        # Caso 2: Upload de uma pasta (múltiplos arquivos)
+        elif 'files' in request.files:
+            uploaded_files = request.files.getlist("files")
+            logging.info(f"Job {job_id}: Recebidos {len(uploaded_files)} arquivos de uma pasta.")
+            for file in uploaded_files:
+                if file and file.filename and file.filename.lower().endswith('.xml'):
+                    xml_files_in_memory[secure_filename(file.filename)] = file.read()
+        else:
+            return jsonify({"error": "Nenhum arquivo ou pasta foi enviado."}), 400
 
         if not xml_files_in_memory:
-            return jsonify({"error": "Nenhum arquivo XML válido foi enviado."}), 400
+            return jsonify({"error": "Nenhum arquivo XML válido foi encontrado no envio."}), 400
 
-        # --- 2. Lê os números opcionais informados ---
-        numeros_str = request.form.get("numeros", "")
-        numeros_para_copiar = parse_numeros(numeros_str)
+        # --- MELHORIA: CORREÇÃO DO NOME DO CAMPO ---
+        numeros_str = request.form.get("numerosParaCopiar", "")
+        numeros_para_copiar = analysis_engine.parse_numeros(numeros_str)
 
-        # --- 3. Define diretório de trabalho ---
-        job_id = os.urandom(8).hex()
-        result_dir = BASE_DIR / f"job_{job_id}"
-        result_dir.mkdir(parents=True, exist_ok=True)
-
-        # --- 4. Executa a análise ---
-        logging.info(f"Iniciando análise no diretório {result_dir}")
-        result = run_analysis(xml_files_in_memory, result_dir, numeros_para_copiar)
+        # --- Executa a análise ---
+        logging.info(f"Job {job_id}: Iniciando análise de {len(xml_files_in_memory)} arquivos.")
+        result = analysis_engine.run_analysis(xml_files_in_memory, job_dir, numeros_para_copiar)
         zip_path = result["zip_path"]
 
-        # --- 5. Retorna o ZIP para download direto ---
         if not zip_path.exists():
-            return jsonify({"error": "Falha ao gerar o arquivo ZIP."}), 500
+            raise IOError("Arquivo ZIP final não foi gerado.")
 
-        logging.info(f"Análise concluída, enviando arquivo: {zip_path}")
+        # --- MELHORIA: LIMPEZA SEGURA DE ARQUIVOS ---
+        # 1. Lê todo o arquivo ZIP para a memória
+        zip_in_memory = io.BytesIO()
+        with open(zip_path, 'rb') as f:
+            zip_in_memory.write(f.read())
+        zip_in_memory.seek(0) # Volta para o início do buffer
+
+        # 2. Com o arquivo seguro na memória, a pasta temporária já pode ser deletada
+        shutil.rmtree(job_dir)
+        logging.info(f"Job {job_id}: Pasta temporária {job_dir} limpa com sucesso.")
+
+        # 3. Envia o arquivo que está na memória
+        logging.info(f"Job {job_id}: Análise concluída, enviando arquivo ZIP.")
         return send_file(
-            zip_path,
+            zip_in_memory,
             as_attachment=True,
-            download_name="resultados.zip",
+            download_name=zip_path.name, # Usa o nome original do arquivo
             mimetype="application/zip"
         )
 
     except Exception as e:
-        logging.exception("Erro interno no job")
-        return jsonify({"error": str(e)}), 500
+        logging.exception(f"Erro interno no job {job_id}")
+        # Limpa a pasta do job em caso de erro também
+        if job_dir.exists():
+            shutil.rmtree(job_dir)
+        return jsonify({"error": "Ocorreu um erro interno no servidor."}), 500
 
 
 @app.route("/")
@@ -79,4 +106,5 @@ def index():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # Esta parte é ignorada pelo Gunicorn no Render, serve apenas para teste local
+    app.run(host="0.0.0.0", port=5001, debug=True)
