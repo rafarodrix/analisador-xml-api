@@ -104,7 +104,7 @@ def agrupar_lacunas(numeros: list[int]) -> str:
     resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
     return ", ".join(resultado)
 
-ef gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
+def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
     """Gera relatórios de resumo (.txt) e detalhado (.csv) com análise de sequência."""
     logging.info("Iniciando geração de relatórios aprimorados...")
 
