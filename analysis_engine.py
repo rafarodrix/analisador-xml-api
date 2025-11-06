@@ -3,13 +3,21 @@ import csv
 import time
 import zipfile
 import textwrap
-import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from collections import defaultdict, Counter
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from lxml import etree
+
+NFE_NAMESPACE = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
+
+STATUS_AUTORIZADA = "NFe Autorizada"
+STATUS_CANCELADA = "NFe Cancelada"
+STATUS_INUTILIZADA = "NFe Inutilizada"
+STATUS_REJEITADA_PREFIX = "NFe com Rejeição"
+STATUS_DESCONHECIDO_PREFIX = "Status Desconhecido"
+
 
 # --- ESTRUTURA DE DADOS ---
 @dataclass
@@ -28,6 +36,7 @@ class DadosNota:
     foi_copiado: bool = False
     erros: list[str] = field(default_factory=list)
 
+
 # --- FUNÇÕES AUXILIARES ---
 
 def _formatar_data(iso_str: str) -> str:
@@ -42,64 +51,114 @@ def _formatar_data(iso_str: str) -> str:
         return iso_str
 
 def parse_numeros(raw_str: str) -> set[int]:
+    """
+    Converte "1,2,5-8, 10" em {1,2,5,6,7,8,10}.
+    Suporta intervalos, valores repetidos e ignora inválidos.
+    """
     if not raw_str:
         return set()
-    numeros = set()
-    for n in raw_str.split(","):
-        n = n.strip()
-        if n.isdigit():
-            numeros.add(int(n))
-        elif n:
-            logging.warning(f"Valor inválido ignorado: {n}")
-    return numeros
+    
+    result = set()
+    partes = raw_str.split(",")
+
+    for parte in partes:
+        parte = parte.strip()
+
+        if "-" in parte:  
+            try:
+                ini_str, fim_str = parte.split("-")
+                ini, fim = int(ini_str), int(fim_str)
+                if ini <= fim:
+                    result.update(range(ini, fim + 1))
+                else:
+                    logging.warning(f"Intervalo invertido ignorado: {parte}")
+            except (ValueError, TypeError):
+                logging.warning(f"Valor de intervalo inválido ignorado: {parte}")
+        
+        elif parte.isdigit():
+            result.add(int(parte))
+        
+        elif parte:
+            logging.warning(f"Valor numérico inválido ignorado: {parte}")
+            
+    return result
+
 
 def _mapear_cstat_para_tipo(cstat: str) -> str:
+    """Mapeia o cStat para um tipo de documento (usando constantes)."""
     mapping = {
-        '100': "NFe Autorizada",
-        '101': "NFe Cancelada",
-        '135': "NFe Cancelada",
-        '102': "NFe Inutilizada",
+        '100': STATUS_AUTORIZADA,
+        '101': STATUS_CANCELADA,
+        '135': STATUS_CANCELADA, 
+        '102': STATUS_INUTILIZADA,
     }
     if cstat in mapping:
         return mapping[cstat]
     if cstat and cstat.startswith(('2', '3')):
-        return f"NFe com Rejeição ({cstat})"
-    return f"Status Desconhecido ({cstat})"
+        return f"{STATUS_REJEITADA_PREFIX} ({cstat})"
+    return f"{STATUS_DESCONHECIDO_PREFIX} ({cstat})"
+
 
 def obter_dados_xml_de_conteudo(filename: str, file_content: bytes) -> DadosNota:
+    """
+    Extrai dados do XML usando lxml para performance e robustez.
+    O 'recover=True' é crucial para XMLs com pequenos erros.
+    """
     nota = DadosNota(arquivo_path=Path(filename))
     try:
-        content_str = file_content.decode('utf-8', errors='replace')
-        root = ET.fromstring(content_str)
-        ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
+        # 1. 'recover=True' tenta corrigir erros de XML
+        parser = etree.XMLParser(recover=True, encoding="utf-8")
+        root = etree.fromstring(file_content, parser=parser)
+        
+        # 2. xpath com string() é mais limpo e seguro que .findtext
+        cstat = root.xpath("string(.//nfe:cStat)", namespaces=NFE_NAMESPACE).strip()
+        motivo = root.xpath("string(.//nfe:xMotivo)", namespaces=NFE_NAMESPACE).strip()
+        
+        nota.status_code = cstat or "N/A"
+        nota.status_text = motivo or "N/A"
+        nota.tipo_documento = _mapear_cstat_para_tipo(cstat)
 
-        nota.status_code = (root.findtext('.//nfe:cStat', '', ns) or '').strip()
-        nota.status_text = (root.findtext('.//nfe:xMotivo', '', ns) or '').strip()
-        nota.tipo_documento = _mapear_cstat_para_tipo(nota.status_code)
-
-        ide_node = root.find('.//nfe:ide', ns)
-        if ide_node is not None:
-            nota.modelo = ide_node.findtext('nfe:mod', '', ns)
-            nota.serie = ide_node.findtext('nfe:serie', '', ns)
-            nota.numero_inicial = ide_node.findtext('nfe:nNF', '', ns)
+        # 3. Busca pela chave de acesso (funciona em NFe, CTe, etc.)
+        nota.chave_acesso = root.xpath("string(.//nfe:chNFe)", namespaces=NFE_NAMESPACE).strip()
+        
+        # 4. Dados da <ide>
+        ide = root.xpath(".//nfe:ide", namespaces=NFE_NAMESPACE)
+        if ide:
+            ide = ide[0]
+            nota.modelo = ide.xpath("string(nfe:mod)", namespaces=NFE_NAMESPACE)
+            nota.serie = ide.xpath("string(nfe:serie)", namespaces=NFE_NAMESPACE)
+            nota.numero_inicial = ide.xpath("string(nfe:nNF)", namespaces=NFE_NAMESPACE)
             nota.numero_final = nota.numero_inicial
-            nota.data_emissao = ide_node.findtext('nfe:dhEmi', '', ns)
+            nota.data_emissao = ide.xpath("string(nfe:dhEmi)", namespaces=NFE_NAMESPACE)
 
-        nota.chave_acesso = (root.findtext('.//nfe:chNFe', '', ns) or '').strip()
+        # 5. Sobrescreve dados se for Inutilização
+        if nota.tipo_documento == STATUS_INUTILIZADA:
+            infinut = root.xpath(".//nfe:infInut", namespaces=NFE_NAMESPACE)
+            if infinut:
+                infinut = infinut[0]
+                nota.numero_inicial = (
+                    infinut.xpath("string(nfe:nNFIni)", namespaces=NFE_NAMESPACE)
+                    or nota.numero_inicial
+                )
+                nota.numero_final = (
+                    infinut.xpath("string(nfe:nNFFin)", namespaces=NFE_NAMESPACE)
+                    or nota.numero_final
+                )
 
-        if nota.tipo_documento == "NFe Inutilizada":
-            infInut_node = root.find('.//nfe:infInut', ns)
-            if infInut_node is not None:
-                nota.numero_inicial = infInut_node.findtext('nfe:nNFIni', nota.numero_inicial, ns)
-                nota.numero_final = infInut_node.findtext('nfe:nNFFin', nota.numero_final, ns)
+        # 6. Identifica Evento de Cancelamento (mais robusto)
+        inf_evento = root.xpath(".//nfe:infEvento", namespaces=NFE_NAMESPACE)
+        if inf_evento:
+            tp = inf_evento[0].xpath("string(nfe:tpEvento)", namespaces=NFE_NAMESPACE)
+            if tp == "110111": # Código do evento de cancelamento
+                nota.tipo_documento = f"{STATUS_CANCELADA} (Evento)"
 
-    except ET.ParseError as e:
-        nota.erros.append(f"XML inválido: {e}")
     except Exception as e:
-        nota.erros.append(f"Erro inesperado: {e}")
+        nota.erros.append(f"Erro ao ler XML: {e}")
     return nota
 
+
 def agrupar_lacunas(numeros: list[int]) -> str:
+    """(Sem alterações) Agrupa uma lista de números em intervalos."""
     if not numeros: return ""
     numeros = sorted(numeros)
     resultado, inicio_intervalo = [], numeros[0]
@@ -112,35 +171,41 @@ def agrupar_lacunas(numeros: list[int]) -> str:
     resultado.append(str(inicio_intervalo) if inicio_intervalo == fim_intervalo else f"{inicio_intervalo}-{fim_intervalo}")
     return ", ".join(resultado)
 
-def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
-    logging.info("Iniciando geração de relatórios")
-
-    resumo_path = pasta_destino / "resumo_analise.txt"
-    csv_path = pasta_destino / "relatorio_detalhado.csv"
-
-    total_xmls = len(lista_dados_notas)
-    if total_xmls == 0:
-        resumo_path.touch()
-        csv_path.touch()
-        return resumo_path, csv_path
-
-    com_erro = sum(1 for n in lista_dados_notas if n.erros)
-    contagem_status = Counter(n.tipo_documento for n in lista_dados_notas)
-
-    # ✅ CORREÇÃO: CANCELADAS e INUTILIZADAS entram na análise numérica
+def _preparar_dados_relatorio(lista_dados_notas: list[DadosNota]) -> tuple[dict, list]:
+    """Separa as notas em 'dados_por_serie' (para análise) e 'outras_notas'."""
     dados_por_serie = defaultdict(list)
     outras_notas = []
+    
+    # Usamos as constantes para o filtro
+    tipos_validos_para_sequencia = {
+        STATUS_AUTORIZADA, 
+        STATUS_CANCELADA, 
+        STATUS_INUTILIZADA
+    }
 
     for nota in lista_dados_notas:
-        if nota.tipo_documento in ("NFe Autorizada", "NFe Cancelada", "NFe Inutilizada") \
-            and nota.modelo and nota.serie and nota.numero_inicial and nota.numero_inicial.isdigit():
-
+        if nota.tipo_documento in tipos_validos_para_sequencia \
+           and nota.modelo and nota.serie and nota.numero_inicial and nota.numero_inicial.isdigit():
+            
             chave = (nota.modelo, nota.serie)
             dados_por_serie[chave].append(nota)
         else:
             outras_notas.append(nota)
+            
+    return dados_por_serie, outras_notas
 
-    # --- RESUMO EM TXT ---
+
+def _gerar_relatorio_txt(
+    resumo_path: Path, 
+    lista_dados_notas: list[DadosNota], 
+    dados_por_serie: dict,
+    tempo_execucao: float | None
+):
+    """Gera o arquivo de resumo .txt."""
+    total_xmls = len(lista_dados_notas)
+    com_erro = sum(1 for n in lista_dados_notas if n.erros)
+    contagem_status = Counter(n.tipo_documento for n in lista_dados_notas)
+    
     with resumo_path.open('w', encoding='utf-8') as f:
         f.write("=" * 100 + "\n")
         f.write(f"{'RELATÓRIO DE ANÁLISE DE DOCUMENTOS FISCAIS':^100}\n")
@@ -155,7 +220,7 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
         f.write(f"{'SUMÁRIO DE STATUS DOS DOCUMENTOS':^100}\n")
         f.write("-" * 100 + "\n")
         for status, qtd in sorted(contagem_status.items()):
-            percentual = (qtd / total_xmls * 100)
+            percentual = (qtd / total_xmls * 100) if total_xmls > 0 else 0
             f.write(f"- {status:<35}: {qtd:<6} ({percentual:.2f}%)\n")
         f.write("\n")
 
@@ -193,7 +258,9 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
                         f.write(linha + "\n")
                 f.write("\n")
 
-    # --- CSV DETALHADO ---
+
+def _gerar_relatorio_csv(csv_path: Path, dados_por_serie: dict, outras_notas: list[DadosNota]):
+    """Gera o arquivo de relatório detalhado .csv."""
     headers = [
         "modelo", "serie", "numero_nota", "data_emissao", "tipo_documento",
         "status_sefaz_cod", "status_sefaz_motivo", "chave_acesso",
@@ -204,6 +271,7 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
         writer = csv.writer(f, delimiter=';')
         writer.writerow(headers)
 
+        # 1. Notas da análise de sequência
         for (modelo, serie), notas in sorted(dados_por_serie.items()):
             notas_dict = {int(n.numero_inicial): n for n in notas}
             numeros = sorted(notas_dict.keys())
@@ -211,8 +279,8 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
 
             for num in range(min_n, max_n + 1):
                 nota = notas_dict.get(num)
-
-                if nota:  # ✅ Agora CANCELADAS entram aqui corretamente
+                
+                if nota:  # Nota PRESENTE (Autorizada, Cancelada ou Inutilizada)
                     writer.writerow([
                         nota.modelo, nota.serie, nota.numero_inicial,
                         _formatar_data(nota.data_emissao), nota.tipo_documento,
@@ -220,13 +288,13 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
                         nota.arquivo_path.name, "Sim" if nota.foi_copiado else "Não",
                         "Presente", "; ".join(nota.erros)
                     ])
-                else:  # Apenas se realmente faltar
+                else:  # Nota FALTANTE (lacuna)
                     writer.writerow([
                         modelo, serie, num, "", "Ausente",
                         "", "", "", "", "Não", "Faltante", ""
                     ])
 
-        # Notas fora de sequência ou rejeitadas
+        # 2. Outras notas (Rejeitadas, erros de parse, etc.)
         for nota in sorted(outras_notas, key=lambda n: (n.modelo, n.serie, n.numero_inicial)):
             writer.writerow([
                 nota.modelo, nota.serie, nota.numero_inicial,
@@ -236,10 +304,46 @@ def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, te
                 "N/A", "; ".join(nota.erros)
             ])
 
+
+def gerar_relatorios(lista_dados_notas: list[DadosNota], pasta_destino: Path, tempo_execucao: float | None = None) -> tuple[Path, Path]:
+    """
+    Função "Gerente": coordena a preparação dos dados e a
+    geração dos relatórios TXT e CSV.
+    """
+    logging.info("Iniciando geração de relatórios")
+
+    resumo_path = pasta_destino / "resumo_analise.txt"
+    csv_path = pasta_destino / "relatorio_detalhado.csv"
+
+    if not lista_dados_notas:
+        logging.warning("Nenhuma nota para gerar relatórios. Arquivos vazios serão criados.")
+        resumo_path.touch()
+        csv_path.touch()
+        return resumo_path, csv_path
+
+    # 1. Preparar dados
+    dados_por_serie, outras_notas = _preparar_dados_relatorio(lista_dados_notas)
+
+    # 2. Delegar geração do TXT
+    _gerar_relatorio_txt(
+        resumo_path, 
+        lista_dados_notas, 
+        dados_por_serie, 
+        tempo_execucao
+    )
+
+    # 3. Delegar geração do CSV
+    _gerar_relatorio_csv(
+        csv_path,
+        dados_por_serie,
+        outras_notas
+    )
+
     logging.info("Relatórios gerados com sucesso.")
     return resumo_path, csv_path
 
-# --- FUNÇÃO PRINCIPAL ---
+
+# --- FUNÇÃO PRINCIPAL (Sem grandes alterações) ---
 def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, numeros_para_copiar: set[int]) -> dict:
     start_time = time.time()
     total_arquivos = len(xml_files_in_memory)
@@ -254,12 +358,17 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
 
     lista_dados_notas = []
 
+
     with ThreadPoolExecutor() as executor:
         futures = {executor.submit(obter_dados_xml_de_conteudo, filename, content): (filename, content)
                    for filename, content in xml_files_in_memory.items()}
+        
+            
         for future in as_completed(futures):
             lista_dados_notas.append(future.result())
 
+
+    logging.info("Fase de parsing concluída. Copiando arquivos selecionados...")
     copiados = 0
     for nota in lista_dados_notas:
         try:
@@ -271,11 +380,21 @@ def run_analysis(xml_files_in_memory: dict[str, bytes], pasta_destino: Path, num
                     destino.write_bytes(xml_files_in_memory[filename_original])
                     nota.foi_copiado = True
                     copiados += 1
+                else:
+                    nota.erros.append(f"Falha ao copiar: Arquivo '{filename_original}' não encontrado na memória.")
         except Exception as e:
             nota.erros.append(f"Falha ao copiar XML: {e}")
 
-    resumo_path, csv_path = gerar_relatorios(lista_dados_notas, pasta_destino, tempo_execucao=round(time.time() - start_time, 2))
+    logging.info(f"{copiados} arquivos copiados. Gerando relatórios...")
+    
+    # Chama a função "gerente" refatorada
+    resumo_path, csv_path = gerar_relatorios(
+        lista_dados_notas, 
+        pasta_destino, 
+        tempo_execucao=round(time.time() - start_time, 2)
+    )
 
+    logging.info("Compactando resultados...")
     zip_filepath = pasta_destino / f"resultados_{datetime.now():%Y%m%d_%H%M%S}.zip"
     with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.write(resumo_path, arcname=resumo_path.name)
