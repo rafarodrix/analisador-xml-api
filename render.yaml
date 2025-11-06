@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: analisador-xml-api
+    env: python
+    runtime: python-3.12.3
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api:app --workers 2 --threads 4 --timeout 600
